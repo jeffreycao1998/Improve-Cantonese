@@ -187,6 +187,105 @@ h2 {
   white-space: nowrap;
 }
 
+.top-band-actions {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.shortcut-button {
+  display: inline-flex;
+  min-height: 40px;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  padding: 0 13px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.shortcut-button:hover {
+  border-color: rgba(8, 127, 122, 0.34);
+  color: var(--teal-dark);
+}
+
+.shortcut-dialog {
+  width: min(100%, 480px);
+  max-height: calc(100vh - 40px);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface-strong);
+  box-shadow: 0 28px 80px rgba(20, 29, 34, 0.28);
+  padding: 0;
+}
+
+.shortcut-dialog::backdrop {
+  background: rgba(20, 29, 34, 0.58);
+}
+
+.shortcut-card {
+  padding: 24px;
+}
+
+.shortcut-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.shortcut-heading h2 {
+  margin-bottom: 0;
+  font-size: 1.65rem;
+}
+
+.shortcut-intro {
+  margin: 13px 0 18px;
+  color: var(--muted);
+}
+
+.shortcut-list {
+  margin: 0;
+}
+
+.shortcut-list > div {
+  display: grid;
+  grid-template-columns: 48px 1fr;
+  align-items: center;
+  gap: 12px;
+  border-top: 1px solid var(--line);
+  padding: 11px 0;
+}
+
+.shortcut-list dt,
+.shortcut-list dd {
+  margin: 0;
+}
+
+.shortcut-list dd {
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.shortcut-list kbd {
+  display: inline-grid;
+  min-width: 34px;
+  min-height: 30px;
+  place-items: center;
+  border: 1px solid #cbc4b8;
+  border-bottom-width: 3px;
+  border-radius: 6px;
+  background: var(--paper);
+  color: var(--ink);
+  padding: 2px 7px;
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 900;
+}
+
 .status-connected {
   border-color: rgba(47, 125, 50, 0.25);
   color: var(--green);
@@ -1589,6 +1688,11 @@ h2 {
     padding-top: 20px;
   }
 
+  .top-band-actions {
+    width: 100%;
+    justify-content: space-between;
+  }
+
   .workspace {
     grid-template-columns: 1fr;
   }
@@ -1692,6 +1796,10 @@ h2 {
 
   h2 {
     font-size: 1.55rem;
+  }
+
+  .shortcut-button span {
+    display: none;
   }
 
   .workspace {

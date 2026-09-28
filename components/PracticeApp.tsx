@@ -6,6 +6,7 @@ import {
   ChevronRight,
   CircleAlert,
   History as HistoryIcon,
+  Keyboard,
   LoaderCircle,
   Map as MapIcon,
   Mic,
@@ -20,10 +21,12 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { JourneyDashboard } from "@/components/JourneyDashboard";
+import { KeyboardShortcuts } from "@/components/KeyboardShortcuts";
 import { Onboarding } from "@/components/Onboarding";
 import { ReviewQueue } from "@/components/ReviewQueue";
 import { SessionHistory } from "@/components/SessionHistory";
 import { buildCoachInstructions } from "@/lib/coachInstructions";
+import { getKeyboardCommand } from "@/lib/keyboardShortcuts";
 import {
   addCustomScenario,
   addSessionReview,
@@ -365,6 +368,7 @@ export function PracticeApp() {
   const [progress, setProgress] = useState<LocalProgress>(defaultProgress);
   const [hasLoadedProgress, setHasLoadedProgress] = useState(false);
   const [isEditingProfile, setIsEditingProfile] = useState(false);
+  const [showKeyboardShortcuts, setShowKeyboardShortcuts] = useState(false);
   const [activeView, setActiveView] = useState<ActiveView>("practice");
   const [selectedScenarioId, setSelectedScenarioId] = useState<
     PracticeScenario["id"]
@@ -421,6 +425,48 @@ export function PracticeApp() {
       closeRealtimeSession(realtimeSessionRef.current);
     };
   }, []);
+
+  useEffect(() => {
+    function handleKeyboardShortcut(event: KeyboardEvent) {
+      if (!progress.profile || isEditingProfile) {
+        return;
+      }
+
+      const command = getKeyboardCommand(event);
+      if (!command) {
+        return;
+      }
+
+      if (command === "help") {
+        event.preventDefault();
+        setShowKeyboardShortcuts((visible) => !visible);
+        return;
+      }
+
+      if (command === "dismiss") {
+        if (showKeyboardShortcuts) {
+          event.preventDefault();
+          setShowKeyboardShortcuts(false);
+        }
+        return;
+      }
+
+      if (showKeyboardShortcuts || connectionState === "connected") {
+        return;
+      }
+
+      event.preventDefault();
+      setActiveView(command);
+    }
+
+    window.addEventListener("keydown", handleKeyboardShortcut);
+    return () => window.removeEventListener("keydown", handleKeyboardShortcut);
+  }, [
+    connectionState,
+    isEditingProfile,
+    progress.profile,
+    showKeyboardShortcuts,
+  ]);
 
   function pushLine(line: CoachLine) {
     const signature = `${line.speaker}:${line.text.trim()}`;
@@ -916,19 +962,35 @@ export function PracticeApp() {
           <p className="eyebrow">Guangzhou Cantonese</p>
           <h1>Speak first. Read almost never.</h1>
         </div>
-        <div className={`status-pill status-${connectionState}`}>
-          {isGeneratingReview ? (
-            <LoaderCircle className="spin" size={16} aria-hidden="true" />
-          ) : (
-            <Activity size={16} aria-hidden="true" />
-          )}
-          <span>
-            {isGeneratingReview
-              ? "Reviewing session"
-              : statusCopy(connectionState)}
-          </span>
+        <div className="top-band-actions">
+          <button
+            aria-label="Show keyboard shortcuts"
+            className="shortcut-button"
+            onClick={() => setShowKeyboardShortcuts(true)}
+            title="Keyboard shortcuts (?)"
+            type="button"
+          >
+            <Keyboard size={18} aria-hidden="true" />
+            <span>Shortcuts</span>
+          </button>
+          <div className={`status-pill status-${connectionState}`}>
+            {isGeneratingReview ? (
+              <LoaderCircle className="spin" size={16} aria-hidden="true" />
+            ) : (
+              <Activity size={16} aria-hidden="true" />
+            )}
+            <span>
+              {isGeneratingReview
+                ? "Reviewing session"
+                : statusCopy(connectionState)}
+            </span>
+          </div>
         </div>
       </section>
+
+      {showKeyboardShortcuts ? (
+        <KeyboardShortcuts onClose={() => setShowKeyboardShortcuts(false)} />
+      ) : null}
 
       <nav className="app-nav" aria-label="Main navigation">
         <button
