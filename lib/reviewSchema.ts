@@ -34,50 +34,93 @@ export const generatedReviewSchema = z.object({
 
 export type GeneratedReview = z.infer<typeof generatedReviewSchema>;
 
-export const generatedReviewJsonSchema = {
-  type: "object",
-  properties: {
-    overallScore: { type: "integer", minimum: 0, maximum: 100 },
-    skillScores: {
-      type: "object",
-      properties: {
-        tone: { type: "integer", minimum: 0, maximum: 100 },
-        wording: { type: "integer", minimum: 0, maximum: 100 },
-        flow: { type: "integer", minimum: 0, maximum: 100 },
-        confidence: { type: "integer", minimum: 0, maximum: 100 },
-        listening: { type: "integer", minimum: 0, maximum: 100 },
-      },
-      required: ["tone", "wording", "flow", "confidence", "listening"],
-      additionalProperties: false,
-    },
-    summary: { type: "string" },
-    wins: { type: "array", items: { type: "string" } },
-    nextSteps: { type: "array", items: { type: "string" } },
-    phrases: {
-      type: "array",
-      items: {
+export function createGeneratedReviewJsonSchema(isFineTuned = false) {
+  const text = (maxLength: number) =>
+    isFineTuned
+      ? { type: "string" as const }
+      : { type: "string" as const, minLength: 1, maxLength };
+  const score = isFineTuned
+    ? { type: "integer" as const }
+    : { type: "integer" as const, minimum: 0, maximum: 100 };
+
+  return {
+    type: "object",
+    properties: {
+      overallScore: score,
+      skillScores: {
         type: "object",
         properties: {
-          original: { type: "string" },
-          improved: { type: "string" },
-          englishHint: { type: "string" },
-          focusArea: {
-            type: "string",
-            enum: ["tone", "wording", "flow", "confidence", "listening"],
-          },
+          tone: score,
+          wording: score,
+          flow: score,
+          confidence: score,
+          listening: score,
         },
-        required: ["original", "improved", "englishHint", "focusArea"],
+        required: ["tone", "wording", "flow", "confidence", "listening"],
         additionalProperties: false,
       },
+      summary: text(500),
+      wins: { type: "array", items: text(180) },
+      nextSteps: { type: "array", items: text(180) },
+      phrases: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            original: text(240),
+            improved: text(240),
+            englishHint: text(240),
+            focusArea: {
+              type: "string",
+              enum: ["tone", "wording", "flow", "confidence", "listening"],
+            },
+          },
+          required: ["original", "improved", "englishHint", "focusArea"],
+          additionalProperties: false,
+        },
+      },
     },
-  },
-  required: [
-    "overallScore",
-    "skillScores",
-    "summary",
-    "wins",
-    "nextSteps",
-    "phrases",
-  ],
-  additionalProperties: false,
-} as const;
+    required: [
+      "overallScore",
+      "skillScores",
+      "summary",
+      "wins",
+      "nextSteps",
+      "phrases",
+    ],
+    additionalProperties: false,
+  } as const;
+}
+
+export const generatedReviewJsonSchema = createGeneratedReviewJsonSchema();
+
+// Array caps are local for every model. Fine-tuned models also need local text caps.
+export function normalizeGeneratedReview(value: unknown, isFineTuned = false) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+  const review = value as Record<string, unknown>;
+  const text = (value: unknown, maxLength: number) =>
+    isFineTuned && typeof value === "string" ? value.slice(0, maxLength) : value;
+  const notes = (value: unknown) =>
+    Array.isArray(value) ? value.slice(0, 4).map((item) => text(item, 180)) : value;
+
+  return {
+    ...review,
+    summary: text(review.summary, 500),
+    wins: notes(review.wins),
+    nextSteps: notes(review.nextSteps),
+    phrases: Array.isArray(review.phrases)
+      ? review.phrases.slice(0, 5).map((phrase: unknown) => {
+          if (!phrase || typeof phrase !== "object" || Array.isArray(phrase)) {
+            return phrase;
+          }
+          const fields = phrase as Record<string, unknown>;
+          return {
+            ...fields,
+            original: text(fields.original, 240),
+            improved: text(fields.improved, 240),
+            englishHint: text(fields.englishHint, 240),
+          };
+        })
+      : review.phrases,
+  };
+}

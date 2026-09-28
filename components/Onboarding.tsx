@@ -53,14 +53,21 @@ const levelOptions: Array<{ id: LearnerLevel; label: string; detail: string }> =
   ];
 
 type OnboardingProps = {
+  initialProfile?: LearnerProfile | null;
   onComplete: (profile: LearnerProfile) => void;
 };
 
-export function Onboarding({ onComplete }: OnboardingProps) {
-  const [name, setName] = useState("");
-  const [level, setLevel] = useState<LearnerLevel>("heritage");
-  const [goals, setGoals] = useState<LearningGoal[]>(["confidence", "family"]);
-  const [dailyMinutes, setDailyMinutes] = useState<5 | 10 | 15>(10);
+export function Onboarding({ initialProfile, onComplete }: OnboardingProps) {
+  const [name, setName] = useState(initialProfile?.name ?? "");
+  const [level, setLevel] = useState<LearnerLevel>(
+    initialProfile?.level ?? "heritage",
+  );
+  const [goals, setGoals] = useState<LearningGoal[]>(
+    initialProfile?.goals ?? ["confidence", "family"],
+  );
+  const [dailyMinutes, setDailyMinutes] = useState<5 | 10 | 15>(
+    initialProfile?.dailyMinutes ?? 10,
+  );
 
   function toggleGoal(goal: LearningGoal) {
     setGoals((current) =>

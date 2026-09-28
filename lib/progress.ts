@@ -166,6 +166,14 @@ function scoreOr(value: unknown, fallback: number) {
   return Math.max(0, Math.min(100, numberOr(value, fallback)));
 }
 
+function parseValidItems<T>(value: unknown, schema: z.ZodType<T>): T[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    const parsed = schema.safeParse(item);
+    return parsed.success ? [parsed.data] : [];
+  });
+}
+
 export function migrateProgress(value: unknown): LocalProgress {
   const defaults = freshDefaultProgress();
   if (!isRecord(value)) {
@@ -192,16 +200,10 @@ export function migrateProgress(value: unknown): LocalProgress {
     : defaults.skillScores;
   const parsedProfile = profileSchema.safeParse(value.profile);
   const parsedPlan = trainingPlanSchema.safeParse(value.trainingPlan);
-  const parsedFeedback = z
-    .array(feedbackSchema)
-    .safeParse(value.recentFeedback);
-  const parsedReviews = z
-    .array(sessionReviewSchema)
-    .safeParse(value.sessionReviews);
-  const parsedQueue = z.array(reviewPhraseSchema).safeParse(value.reviewQueue);
-  const parsedScenarios = z
-    .array(scenarioSchema)
-    .safeParse(value.customScenarios);
+  const parsedFeedback = parseValidItems(value.recentFeedback, feedbackSchema);
+  const parsedReviews = parseValidItems(value.sessionReviews, sessionReviewSchema);
+  const parsedQueue = parseValidItems(value.reviewQueue, reviewPhraseSchema);
+  const parsedScenarios = parseValidItems(value.customScenarios, scenarioSchema);
 
   return {
     schemaVersion: 2,
@@ -212,9 +214,7 @@ export function migrateProgress(value: unknown): LocalProgress {
         ? value.lastPracticeDate
         : null,
     confidenceScore: scoreOr(value.confidenceScore, defaults.confidenceScore),
-    recentFeedback: parsedFeedback.success
-      ? (parsedFeedback.data as PracticeTurnFeedback[]).slice(0, 8)
-      : [],
+    recentFeedback: parsedFeedback.slice(0, 8),
     weakAreas: Array.isArray(value.weakAreas)
       ? value.weakAreas
           .filter((area): area is string => typeof area === "string")
@@ -227,15 +227,11 @@ export function migrateProgress(value: unknown): LocalProgress {
         ? createTrainingPlan(parsedProfile.data)
         : null,
     skillScores,
-    sessionReviews: parsedReviews.success
-      ? (parsedReviews.data as SessionReview[]).slice(0, 30)
-      : [],
-    reviewQueue: parsedQueue.success ? parsedQueue.data : [],
-    customScenarios: parsedScenarios.success
-      ? parsedScenarios.data.filter(
-          (scenario) => scenario.isCustom && scenario.id.startsWith("custom-"),
-        )
-      : [],
+    sessionReviews: parsedReviews.slice(0, 30),
+    reviewQueue: parsedQueue,
+    customScenarios: parsedScenarios.filter(
+      (scenario) => scenario.isCustom && scenario.id.startsWith("custom-"),
+    ),
   };
 }
 
@@ -272,7 +268,10 @@ export function exportProgress(progress: LocalProgress) {
 
 export function importProgress(serialized: string) {
   const parsed = JSON.parse(serialized) as unknown;
-  if (!isRecord(parsed)) {
+  if (
+    !isRecord(parsed) ||
+    !Object.keys(defaultProgress).some((field) => Object.hasOwn(parsed, field))
+  ) {
     throw new Error("This file does not contain Cantonese Coach progress.");
   }
   return migrateProgress(parsed);

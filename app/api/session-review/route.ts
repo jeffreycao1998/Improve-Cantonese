@@ -1,13 +1,15 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import {
-  generatedReviewJsonSchema,
+  createGeneratedReviewJsonSchema,
   generatedReviewSchema,
+  normalizeGeneratedReview,
 } from "@/lib/reviewSchema";
 
 export const runtime = "nodejs";
 
 const REVIEW_MODEL = process.env.OPENAI_REVIEW_MODEL ?? "gpt-4o-mini";
+const IS_FINE_TUNED = REVIEW_MODEL.startsWith("ft:");
 
 const requestSchema = z.object({
   session: z.object({
@@ -125,26 +127,32 @@ export async function POST(request: Request) {
             type: "json_schema",
             name: "cantonese_session_review",
             strict: true,
-            schema: generatedReviewJsonSchema,
+            schema: createGeneratedReviewJsonSchema(IS_FINE_TUNED),
           },
         },
       }),
     });
 
-    const payload = (await response
-      .json()
-      .catch(() => ({}))) as ResponsesPayload;
+    const responseText = await response.text();
+    const payload = (() => {
+      try {
+        return JSON.parse(responseText) as ResponsesPayload | null;
+      } catch {
+        return null;
+      }
+    })();
     if (!response.ok) {
+      console.error("OpenAI session review failed", {
+        status: response.status,
+        error: payload?.error ?? responseText,
+      });
       return NextResponse.json(
-        {
-          error:
-            payload.error?.message ?? "OpenAI could not review this session.",
-        },
-        { status: response.status },
+        { error: "Session review is temporarily unavailable." },
+        { status: 502 },
       );
     }
 
-    const outputText = extractOutputText(payload);
+    const outputText = extractOutputText(payload ?? {});
     if (!outputText) {
       return NextResponse.json(
         { error: "The review did not contain usable feedback." },
@@ -152,7 +160,9 @@ export async function POST(request: Request) {
       );
     }
 
-    const review = generatedReviewSchema.safeParse(JSON.parse(outputText));
+    const review = generatedReviewSchema.safeParse(
+      normalizeGeneratedReview(JSON.parse(outputText), IS_FINE_TUNED),
+    );
     if (!review.success) {
       return NextResponse.json(
         { error: "The review response failed validation." },

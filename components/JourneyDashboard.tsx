@@ -53,7 +53,7 @@ function downloadProgress(progress: LocalProgress) {
   anchor.href = url;
   anchor.download = `cantonese-training-${dateKey()}.json`;
   anchor.click();
-  URL.revokeObjectURL(url);
+  setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
 export function JourneyDashboard({

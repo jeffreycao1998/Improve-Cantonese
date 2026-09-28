@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   addSessionReview,
   beginJourney,
@@ -6,7 +6,11 @@ import {
   defaultProgress,
   importProgress,
   migrateProgress,
+  loadProgress,
+  progressStorageKey,
+  legacyProgressStorageKey,
 } from "./progress";
+import { scenarios } from "./scenarios";
 import type { LearnerProfile, SessionReview } from "./types";
 
 const profile: LearnerProfile = {
@@ -16,6 +20,8 @@ const profile: LearnerProfile = {
   dailyMinutes: 5,
   createdAt: "2026-09-28T08:00:00.000Z",
 };
+
+afterEach(() => vi.unstubAllGlobals());
 
 describe("progress migrations", () => {
   it("upgrades legacy progress without losing core metrics", () => {
@@ -36,6 +42,65 @@ describe("progress migrations", () => {
 
   it("rejects a JSON export that is not an object", () => {
     expect(() => importProgress("[]")).toThrow(/does not contain/);
+  });
+
+  it.each(["{}", '{"unrelated": true}', "null", '"text"'])(
+    "rejects unrelated JSON: %s",
+    (serialized) => {
+      expect(() => importProgress(serialized)).toThrow(/does not contain/);
+    },
+  );
+
+  it("imports partial legacy progress", () => {
+    expect(importProgress('{"sessionsCompleted": 12}').sessionsCompleted).toBe(12);
+  });
+
+  it("retains valid neighbors through migration, import and both storage versions", () => {
+    const phrase = {
+      original: "Original", improved: "Improved", englishHint: "Hint",
+      focusArea: "wording" as const,
+    };
+    const review: SessionReview = {
+      id: "review-1", sessionId: "session-1", scenarioId: "daily",
+      completedAt: "2026-09-28T10:00:00.000Z", durationSeconds: 60,
+      overallScore: 80, skillScores: defaultProgress.skillScores,
+      summary: "Good work", wins: ["Kept speaking"], nextSteps: ["Slow down"],
+      phrases: [phrase], source: "ai",
+    };
+    const feedback = {
+      id: "feedback-1", scenarioId: "daily", createdAt: review.completedAt,
+      summary: "Good work", focusArea: "wording", confidenceDelta: 2,
+    };
+    const queue = addSessionReview(defaultProgress, review).reviewQueue;
+    const customScenario = { ...scenarios[0], id: "custom-1", isCustom: true };
+    const input = {
+      recentFeedback: [null, feedback, {}, feedback],
+      sessionReviews: [{}, review, null, review],
+      reviewQueue: [null, ...queue, {}, ...queue],
+      customScenarios: [{}, customScenario, scenarios[0],
+        { ...customScenario, id: "daily" },
+        { ...customScenario, isCustom: false }, customScenario],
+    };
+    const serialized = JSON.stringify(input);
+    const results = [migrateProgress(input), importProgress(serialized)];
+    for (const key of [progressStorageKey, legacyProgressStorageKey]) {
+      vi.stubGlobal("window", {
+        localStorage: { getItem: (name: string) => name === key ? serialized : null },
+      });
+      results.push(loadProgress());
+    }
+    for (const result of results) {
+      expect(result.recentFeedback).toEqual([feedback, feedback]);
+      expect(result.sessionReviews).toEqual([review, review]);
+      expect(result.reviewQueue).toEqual([...queue, ...queue]);
+      expect(result.customScenarios).toEqual([customScenario, customScenario]);
+    }
+    const limited = migrateProgress({
+      recentFeedback: [null, ...Array(10).fill(feedback)],
+      sessionReviews: [null, ...Array(32).fill(review)],
+    });
+    expect(limited.recentFeedback).toHaveLength(8);
+    expect(limited.sessionReviews).toHaveLength(30);
   });
 
   it("drops corrupted nested data and clamps unsafe scores", () => {

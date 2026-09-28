@@ -899,6 +899,7 @@ export function PracticeApp() {
   if (!progress.profile || isEditingProfile) {
     return (
       <Onboarding
+        initialProfile={progress.profile}
         onComplete={(profile) => {
           setProgress((existing) => beginJourney(existing, profile));
           setIsEditingProfile(false);
