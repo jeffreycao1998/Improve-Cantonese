@@ -5,6 +5,7 @@ import {
   BookOpen,
   ChevronRight,
   CircleAlert,
+  History as HistoryIcon,
   LoaderCircle,
   Map as MapIcon,
   Mic,
@@ -21,6 +22,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { JourneyDashboard } from "@/components/JourneyDashboard";
 import { Onboarding } from "@/components/Onboarding";
 import { ReviewQueue } from "@/components/ReviewQueue";
+import { SessionHistory } from "@/components/SessionHistory";
 import { buildCoachInstructions } from "@/lib/coachInstructions";
 import {
   addCustomScenario,
@@ -52,7 +54,7 @@ import type {
 type ConnectionState =
   "idle" | "checking-mic" | "connecting" | "connected" | "error";
 type TalkState = "muted" | "listening";
-type ActiveView = "practice" | "journey" | "review";
+type ActiveView = "practice" | "journey" | "review" | "history";
 
 type CoachLine = {
   speaker: "coach" | "learner" | "system";
@@ -955,6 +957,15 @@ export function PracticeApp() {
           <RefreshCw size={17} aria-hidden="true" /> Review
           {dueReviewCount ? <span>{dueReviewCount}</span> : null}
         </button>
+        <button
+          aria-current={activeView === "history" ? "page" : undefined}
+          className={activeView === "history" ? "active" : ""}
+          disabled={connectionState === "connected"}
+          onClick={() => setActiveView("history")}
+          type="button"
+        >
+          <HistoryIcon size={17} aria-hidden="true" /> History
+        </button>
       </nav>
 
       {activeView === "practice" ? (
@@ -1200,7 +1211,7 @@ export function PracticeApp() {
           progress={progress}
           scenarios={allScenarios}
         />
-      ) : (
+      ) : activeView === "review" ? (
         <ReviewQueue
           onGrade={(phraseId, rating) =>
             setProgress((existing) =>
@@ -1209,6 +1220,12 @@ export function PracticeApp() {
           }
           onPractice={practiceReviewPhrase}
           phrases={progress.reviewQueue}
+        />
+      ) : (
+        <SessionHistory
+          onPracticeAgain={openScenario}
+          reviews={progress.sessionReviews}
+          scenarios={allScenarios}
         />
       )}
     </main>
