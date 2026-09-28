@@ -246,6 +246,11 @@ export function SessionHistory({
                   ) : null}
                   <button
                     className="primary-button"
+                    disabled={
+                      !scenarios.some(
+                        (scenario) => scenario.id === review.scenarioId,
+                      )
+                    }
                     onClick={() => onPracticeAgain(review.scenarioId)}
                     type="button"
                   >
