@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { buildCoachInstructions } from "@/lib/coachInstructions";
 import { getScenario } from "@/lib/scenarios";
+import type { PracticeScenario } from "@/lib/types";
 
 export const runtime = "nodejs";
 
@@ -8,7 +9,51 @@ const REALTIME_MODEL = "gpt-realtime-2";
 
 type RequestBody = {
   scenarioId?: string;
+  customScenario?: unknown;
 };
+
+function parseCustomScenario(value: unknown): PracticeScenario | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  const candidate = value as Partial<PracticeScenario>;
+  if (
+    typeof candidate.id !== "string" ||
+    !candidate.id.startsWith("custom-") ||
+    typeof candidate.title !== "string" ||
+    typeof candidate.situation !== "string" ||
+    typeof candidate.coachGoal !== "string" ||
+    typeof candidate.learnerGoal !== "string" ||
+    !Array.isArray(candidate.accentFocus) ||
+    !Array.isArray(candidate.samplePrompts)
+  ) {
+    return null;
+  }
+
+  return {
+    id: candidate.id as PracticeScenario["id"],
+    title: candidate.title.slice(0, 100),
+    situation: candidate.situation.slice(0, 600),
+    coachGoal: candidate.coachGoal.slice(0, 400),
+    learnerGoal: candidate.learnerGoal.slice(0, 400),
+    level:
+      candidate.level === "Stretch"
+        ? "Stretch"
+        : candidate.level === "Warm-up"
+          ? "Warm-up"
+          : "Everyday",
+    accentFocus: candidate.accentFocus
+      .filter((focus): focus is string => typeof focus === "string")
+      .slice(0, 8)
+      .map((focus) => focus.slice(0, 100)),
+    samplePrompts: candidate.samplePrompts
+      .filter((prompt): prompt is string => typeof prompt === "string")
+      .slice(0, 6)
+      .map((prompt) => prompt.slice(0, 200)),
+    isCustom: true,
+  };
+}
 
 function pickClientSecret(payload: unknown) {
   if (!payload || typeof payload !== "object") {
@@ -61,9 +106,10 @@ export async function POST(request: Request) {
   if (!apiKey) {
     return NextResponse.json(
       {
-        error: "Missing OPENAI_API_KEY. Add it to .env.local and restart the dev server."
+        error:
+          "Missing OPENAI_API_KEY. Add it to .env.local and restart the dev server.",
       },
-      { status: 500 }
+      { status: 500 },
     );
   }
 
@@ -74,39 +120,43 @@ export async function POST(request: Request) {
     body = {};
   }
 
-  const scenario = getScenario(body.scenarioId);
-  const response = await fetch("https://api.openai.com/v1/realtime/client_secrets", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-      "OpenAI-Safety-Identifier": "local-cantonese-speaking-coach"
-    },
-    body: JSON.stringify({
-      session: {
-        type: "realtime",
-        model: REALTIME_MODEL,
-        instructions: buildCoachInstructions(scenario),
-        output_modalities: ["audio", "text"],
-        audio: {
-          input: {
-            transcription: {
-              model: "gpt-4o-mini-transcribe",
-              language: "yue"
+  const scenario =
+    parseCustomScenario(body.customScenario) ?? getScenario(body.scenarioId);
+  const response = await fetch(
+    "https://api.openai.com/v1/realtime/client_secrets",
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+        "OpenAI-Safety-Identifier": "local-cantonese-speaking-coach",
+      },
+      body: JSON.stringify({
+        session: {
+          type: "realtime",
+          model: REALTIME_MODEL,
+          instructions: buildCoachInstructions(scenario),
+          output_modalities: ["audio", "text"],
+          audio: {
+            input: {
+              transcription: {
+                model: "gpt-4o-mini-transcribe",
+                language: "yue",
+              },
+              turn_detection: {
+                type: "server_vad",
+                create_response: true,
+                silence_duration_ms: 650,
+              },
             },
-            turn_detection: {
-              type: "server_vad",
-              create_response: true,
-              silence_duration_ms: 650
-            }
+            output: {
+              voice: "alloy",
+            },
           },
-          output: {
-            voice: "alloy"
-          }
-        }
-      }
-    })
-  });
+        },
+      }),
+    },
+  );
 
   const payload = (await response.json().catch(() => null)) as unknown;
 
@@ -117,9 +167,9 @@ export async function POST(request: Request) {
         detail:
           payload && typeof payload === "object" && "error" in payload
             ? (payload as { error: unknown }).error
-            : payload
+            : payload,
       },
-      { status: response.status }
+      { status: response.status },
     );
   }
 
@@ -128,15 +178,15 @@ export async function POST(request: Request) {
   if (!clientSecret) {
     return NextResponse.json(
       {
-        error: "OpenAI did not return a usable realtime client secret."
+        error: "OpenAI did not return a usable realtime client secret.",
       },
-      { status: 502 }
+      { status: 502 },
     );
   }
 
   return NextResponse.json({
     client_secret: clientSecret,
     expires_at: pickExpiry(payload),
-    model: REALTIME_MODEL
+    model: REALTIME_MODEL,
   });
 }

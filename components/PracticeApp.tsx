@@ -2,8 +2,13 @@
 
 import {
   Activity,
+  BookOpen,
   ChevronRight,
   CircleAlert,
+  History as HistoryIcon,
+  Keyboard,
+  LoaderCircle,
+  Map as MapIcon,
   Mic,
   MicOff,
   Pause,
@@ -12,28 +17,47 @@ import {
   Sparkles,
   Square,
   Volume2,
-  Waves
+  Waves,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { JourneyDashboard } from "@/components/JourneyDashboard";
+import { KeyboardShortcuts } from "@/components/KeyboardShortcuts";
+import { Onboarding } from "@/components/Onboarding";
+import { ReviewQueue } from "@/components/ReviewQueue";
+import { SessionHistory } from "@/components/SessionHistory";
 import { buildCoachInstructions } from "@/lib/coachInstructions";
+import { getKeyboardCommand } from "@/lib/keyboardShortcuts";
 import {
+  addCustomScenario,
+  addSessionReview,
+  beginJourney,
   completeSession,
   defaultProgress,
+  gradeReviewPhrase,
+  importProgress,
   loadProgress,
   recordFeedback,
-  saveProgress
+  removeCustomScenario,
+  saveProgress,
 } from "@/lib/progress";
+import type { GeneratedReview } from "@/lib/reviewSchema";
 import { scenarios } from "@/lib/scenarios";
+import { buildLocalReview, dateKey } from "@/lib/training";
 import type {
   LocalProgress,
   PracticeScenario,
   PracticeSession,
   PracticeTurnFeedback,
-  RealtimeSessionResponse
+  RealtimeSessionResponse,
+  ReviewPhrase,
+  SessionReview,
+  SessionTranscriptLine,
 } from "@/lib/types";
 
-type ConnectionState = "idle" | "checking-mic" | "connecting" | "connected" | "error";
+type ConnectionState =
+  "idle" | "checking-mic" | "connecting" | "connected" | "error";
 type TalkState = "muted" | "listening";
+type ActiveView = "practice" | "journey" | "review" | "history";
 
 type CoachLine = {
   speaker: "coach" | "learner" | "system";
@@ -109,7 +133,7 @@ function focusLabel(focus: PracticeTurnFeedback["focusArea"]) {
     wording: "natural wording",
     flow: "flow",
     confidence: "confidence",
-    listening: "listening"
+    listening: "listening",
   };
   return labels[focus];
 }
@@ -119,13 +143,25 @@ function inferFocus(text: string): PracticeTurnFeedback["focusArea"] {
   if (lowered.includes("tone") || lowered.includes("pitch")) {
     return "tone";
   }
-  if (lowered.includes("word") || lowered.includes("phrase") || lowered.includes("natural")) {
+  if (
+    lowered.includes("word") ||
+    lowered.includes("phrase") ||
+    lowered.includes("natural")
+  ) {
     return "wording";
   }
-  if (lowered.includes("listen") || lowered.includes("understand") || lowered.includes("repeat")) {
+  if (
+    lowered.includes("listen") ||
+    lowered.includes("understand") ||
+    lowered.includes("repeat")
+  ) {
     return "listening";
   }
-  if (lowered.includes("smooth") || lowered.includes("rhythm") || lowered.includes("flow")) {
+  if (
+    lowered.includes("smooth") ||
+    lowered.includes("rhythm") ||
+    lowered.includes("flow")
+  ) {
     return "flow";
   }
   return "confidence";
@@ -169,11 +205,18 @@ function extractHistoryItemText(item: RealtimeHistoryItem) {
   );
 }
 
-function parseFeedback(text: string, scenario: PracticeScenario): PracticeTurnFeedback {
+function parseFeedback(
+  text: string,
+  scenario: PracticeScenario,
+): PracticeTurnFeedback {
   const clean = text.trim().replace(/\s+/g, " ");
   const sentences = clean.split(/(?<=[.!?])\s+/).filter(Boolean);
-  const summary = sentences.slice(0, 2).join(" ").slice(0, 220) || "Good repetition. Keep the answer short and natural.";
-  const naturalRewrite = sentences.find((sentence) => /try|say|natural|instead/i.test(sentence));
+  const summary =
+    sentences.slice(0, 2).join(" ").slice(0, 220) ||
+    "Good repetition. Keep the answer short and natural.";
+  const naturalRewrite = sentences.find((sentence) =>
+    /try|say|natural|instead/i.test(sentence),
+  );
 
   return {
     id: makeFeedbackId(),
@@ -182,7 +225,7 @@ function parseFeedback(text: string, scenario: PracticeScenario): PracticeTurnFe
     summary,
     naturalRewrite,
     focusArea: inferFocus(clean),
-    confidenceDelta: clean ? 1 : 0
+    confidenceDelta: clean ? 1 : 0,
   };
 }
 
@@ -271,7 +314,7 @@ function closeRealtimeSession(session: unknown) {
   }
 }
 
-function sendKickoff(session: unknown, scenario: PracticeScenario) {
+function sendCoachMessage(session: unknown, text: string) {
   const candidate = session as {
     sendMessage?: (message: string) => void | Promise<void>;
     send?: (event: unknown) => void | Promise<void>;
@@ -280,8 +323,6 @@ function sendKickoff(session: unknown, scenario: PracticeScenario) {
       create?: (event?: unknown) => void | Promise<void>;
     };
   };
-
-  const text = `Start the ${scenario.title} practice now. Give one short spoken prompt and wait for my answer.`;
 
   if (typeof candidate.sendMessage === "function") {
     void candidate.sendMessage(text);
@@ -292,7 +333,7 @@ function sendKickoff(session: unknown, scenario: PracticeScenario) {
     void candidate.addItem({
       type: "message",
       role: "user",
-      content: [{ type: "input_text", text }]
+      content: [{ type: "input_text", text }],
     });
     void candidate.response?.create?.();
     return;
@@ -304,43 +345,80 @@ function sendKickoff(session: unknown, scenario: PracticeScenario) {
       item: {
         type: "message",
         role: "user",
-        content: [{ type: "input_text", text }]
-      }
+        content: [{ type: "input_text", text }],
+      },
     });
     void candidate.send({ type: "response.create" });
   }
 }
 
-export function PracticeApp() {
-  const [selectedScenarioId, setSelectedScenarioId] = useState(scenarios[0].id);
-  const selectedScenario = useMemo(
-    () => scenarios.find((scenario) => scenario.id === selectedScenarioId) ?? scenarios[0],
-    [selectedScenarioId]
+function sendKickoff(
+  session: unknown,
+  scenario: PracticeScenario,
+  instruction?: string,
+) {
+  sendCoachMessage(
+    session,
+    instruction ??
+      `Start the ${scenario.title} practice now. Give one short spoken prompt and wait for my answer.`,
   );
+}
+
+export function PracticeApp() {
   const [progress, setProgress] = useState<LocalProgress>(defaultProgress);
-  const [connectionState, setConnectionState] = useState<ConnectionState>("idle");
+  const [hasLoadedProgress, setHasLoadedProgress] = useState(false);
+  const [isEditingProfile, setIsEditingProfile] = useState(false);
+  const [showKeyboardShortcuts, setShowKeyboardShortcuts] = useState(false);
+  const [activeView, setActiveView] = useState<ActiveView>("practice");
+  const [selectedScenarioId, setSelectedScenarioId] = useState<
+    PracticeScenario["id"]
+  >(scenarios[0].id);
+  const allScenarios = useMemo(
+    () => [...scenarios, ...progress.customScenarios],
+    [progress.customScenarios],
+  );
+  const selectedScenario = useMemo(
+    () =>
+      allScenarios.find((scenario) => scenario.id === selectedScenarioId) ??
+      scenarios[0],
+    [allScenarios, selectedScenarioId],
+  );
+  const [connectionState, setConnectionState] =
+    useState<ConnectionState>("idle");
   const [talkState, setTalkState] = useState<TalkState>("muted");
+  const [isGeneratingReview, setIsGeneratingReview] = useState(false);
+  const [queuedCoachInstruction, setQueuedCoachInstruction] = useState<
+    string | null
+  >(null);
   const [coachLines, setCoachLines] = useState<CoachLine[]>([
     {
       speaker: "system",
-      text: "Choose a scenario and start the voice coach."
-    }
+      text: "Choose a scenario and start the voice coach.",
+    },
   ]);
-  const [currentSession, setCurrentSession] = useState<PracticeSession | null>(null);
+  const [, setCurrentSession] = useState<PracticeSession | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [liveTranscript, setLiveTranscript] = useState("");
   const realtimeSessionRef = useRef<unknown>(null);
+  const currentSessionRef = useRef<PracticeSession | null>(null);
+  const transcriptRef = useRef<SessionTranscriptLine[]>([]);
   const latestCoachTextRef = useRef("");
+  const latestLearnerTextRef = useRef("");
+  const recentLineSignaturesRef = useRef<Map<string, number>>(new Map());
   const seenHistoryItemsRef = useRef<Set<string>>(new Set());
   const learnerSpokeSinceLastCoachRef = useRef(false);
 
   useEffect(() => {
     setProgress(loadProgress());
+    setHasLoadedProgress(true);
   }, []);
 
   useEffect(() => {
+    if (!hasLoadedProgress) {
+      return;
+    }
     saveProgress(progress);
-  }, [progress]);
+  }, [hasLoadedProgress, progress]);
 
   useEffect(() => {
     return () => {
@@ -348,8 +426,82 @@ export function PracticeApp() {
     };
   }, []);
 
+  useEffect(() => {
+    function handleKeyboardShortcut(event: KeyboardEvent) {
+      if (!progress.profile || isEditingProfile) {
+        return;
+      }
+
+      const command = getKeyboardCommand(event);
+      if (!command) {
+        return;
+      }
+
+      if (command === "help") {
+        event.preventDefault();
+        setShowKeyboardShortcuts((visible) => !visible);
+        return;
+      }
+
+      if (command === "dismiss") {
+        if (showKeyboardShortcuts) {
+          event.preventDefault();
+          setShowKeyboardShortcuts(false);
+        }
+        return;
+      }
+
+      if (showKeyboardShortcuts || connectionState === "connected") {
+        return;
+      }
+
+      event.preventDefault();
+      setActiveView(command);
+    }
+
+    window.addEventListener("keydown", handleKeyboardShortcut);
+    return () => window.removeEventListener("keydown", handleKeyboardShortcut);
+  }, [
+    connectionState,
+    isEditingProfile,
+    progress.profile,
+    showKeyboardShortcuts,
+  ]);
+
   function pushLine(line: CoachLine) {
+    const signature = `${line.speaker}:${line.text.trim()}`;
+    const now = Date.now();
+    const lastSeenAt = recentLineSignaturesRef.current.get(signature);
+    if (lastSeenAt && now - lastSeenAt < 5_000) {
+      return;
+    }
+    recentLineSignaturesRef.current.set(signature, now);
+    if (recentLineSignaturesRef.current.size > 20) {
+      const oldestKey = recentLineSignaturesRef.current.keys().next().value;
+      if (oldestKey) {
+        recentLineSignaturesRef.current.delete(oldestKey);
+      }
+    }
+
     setCoachLines((lines) => [line, ...lines].slice(0, 8));
+    if (line.speaker === "system" || !currentSessionRef.current) {
+      return;
+    }
+
+    const transcriptLine: SessionTranscriptLine = {
+      speaker: line.speaker,
+      text: line.text,
+      createdAt: new Date().toISOString(),
+    };
+    transcriptRef.current = [...transcriptRef.current, transcriptLine].slice(
+      -60,
+    );
+    const nextSession = {
+      ...currentSessionRef.current,
+      transcript: transcriptRef.current,
+    };
+    currentSessionRef.current = nextSession;
+    setCurrentSession(nextSession);
   }
 
   function applyFeedback(text: string) {
@@ -359,14 +511,14 @@ export function PracticeApp() {
 
     const feedback = parseFeedback(text, selectedScenario);
     setProgress((existing) => recordFeedback(existing, feedback));
-    setCurrentSession((session) =>
-      session
-        ? {
-            ...session,
-            turns: [feedback, ...session.turns]
-          }
-        : session
-    );
+    if (currentSessionRef.current) {
+      const nextSession = {
+        ...currentSessionRef.current,
+        turns: [feedback, ...currentSessionRef.current.turns],
+      };
+      currentSessionRef.current = nextSession;
+      setCurrentSession(nextSession);
+    }
   }
 
   function handleRealtimeHistoryItem(item: RealtimeHistoryItem) {
@@ -387,6 +539,12 @@ export function PracticeApp() {
     seenHistoryItemsRef.current.add(itemKey);
 
     if (item.role === "user") {
+      const containsAudio = item.content?.some((content) =>
+        content.type?.includes("audio"),
+      );
+      if (!containsAudio) {
+        return;
+      }
       learnerSpokeSinceLastCoachRef.current = true;
       pushLine({ speaker: "learner", text });
       return;
@@ -406,7 +564,9 @@ export function PracticeApp() {
       return;
     }
 
-    history.forEach((item) => handleRealtimeHistoryItem(item as RealtimeHistoryItem));
+    history.forEach((item) =>
+      handleRealtimeHistoryItem(item as RealtimeHistoryItem),
+    );
   }
 
   function handleRealtimeError(errorEvent: unknown) {
@@ -421,7 +581,9 @@ export function PracticeApp() {
 
   function handleRealtimeEvent(event: RealtimeEvent) {
     if (event.type === "error") {
-      setError(event.error?.message ?? "The realtime session reported an error.");
+      setError(
+        event.error?.message ?? "The realtime session reported an error.",
+      );
       setConnectionState("error");
       return;
     }
@@ -432,8 +594,17 @@ export function PracticeApp() {
     }
 
     if (event.type?.includes("input_audio_transcription")) {
+      if (event.type.includes("delta")) {
+        latestLearnerTextRef.current += text;
+        return;
+      }
+      if (!event.type.includes("done") && !event.type.includes("completed")) {
+        return;
+      }
+      const finalLearnerText = latestLearnerTextRef.current || text;
+      latestLearnerTextRef.current = "";
       learnerSpokeSinceLastCoachRef.current = true;
-      pushLine({ speaker: "learner", text });
+      pushLine({ speaker: "learner", text: finalLearnerText });
       return;
     }
 
@@ -458,7 +629,11 @@ export function PracticeApp() {
   }
 
   async function startSession() {
-    if (connectionState === "connecting" || connectionState === "checking-mic") {
+    if (
+      isGeneratingReview ||
+      connectionState === "connecting" ||
+      connectionState === "checking-mic"
+    ) {
       return;
     }
 
@@ -472,15 +647,21 @@ export function PracticeApp() {
       const sessionResponse = await fetch("/api/realtime/session", {
         method: "POST",
         headers: {
-          "Content-Type": "application/json"
+          "Content-Type": "application/json",
         },
-        body: JSON.stringify({ scenarioId: selectedScenario.id })
+        body: JSON.stringify({
+          scenarioId: selectedScenario.id,
+          customScenario: selectedScenario.isCustom
+            ? selectedScenario
+            : undefined,
+        }),
       });
 
-      const data = (await sessionResponse.json()) as Partial<RealtimeSessionResponse> & {
-        error?: string;
-        detail?: unknown;
-      };
+      const data =
+        (await sessionResponse.json()) as Partial<RealtimeSessionResponse> & {
+          error?: string;
+          detail?: unknown;
+        };
 
       if (!sessionResponse.ok || !data.client_secret) {
         throw new Error(data.error ?? "Could not create a realtime session.");
@@ -514,7 +695,7 @@ export function PracticeApp() {
               };
             };
           };
-        }
+        },
       ) => {
         connect: (options: { apiKey: string }) => Promise<void>;
         close: () => void;
@@ -525,7 +706,7 @@ export function PracticeApp() {
 
       const agent = new RealtimeAgent({
         name: "Guangzhou Cantonese Speaking Coach",
-        instructions: buildCoachInstructions(selectedScenario)
+        instructions: buildCoachInstructions(selectedScenario),
       });
       const session = new RealtimeSession(agent, {
         model: data.model ?? "gpt-realtime-2",
@@ -535,24 +716,28 @@ export function PracticeApp() {
             input: {
               transcription: {
                 model: "gpt-4o-mini-transcribe",
-                language: "yue"
+                language: "yue",
               },
               turnDetection: {
                 type: "server_vad",
                 createResponse: true,
-                silenceDurationMs: 650
-              }
+                silenceDurationMs: 650,
+              },
             },
             output: {
-              voice: "alloy"
-            }
-          }
-        }
+              voice: "alloy",
+            },
+          },
+        },
       });
 
       if (typeof session.on === "function") {
-        session.on("transport_event", (event) => handleRealtimeEvent(event as RealtimeEvent));
-        session.on("history_added", (item) => handleRealtimeHistoryItem(item as RealtimeHistoryItem));
+        session.on("transport_event", (event) =>
+          handleRealtimeEvent(event as RealtimeEvent),
+        );
+        session.on("history_added", (item) =>
+          handleRealtimeHistoryItem(item as RealtimeHistoryItem),
+        );
         session.on("history_updated", handleRealtimeHistory);
         session.on("error", handleRealtimeError);
         session.on("audio_start", () => setLiveTranscript(""));
@@ -571,21 +756,35 @@ export function PracticeApp() {
       setSessionMuted(session, true);
       setTalkState("muted");
       seenHistoryItemsRef.current = new Set();
+      recentLineSignaturesRef.current = new Map();
+      latestLearnerTextRef.current = "";
       learnerSpokeSinceLastCoachRef.current = false;
       setConnectionState("connected");
-      setCurrentSession({
+      transcriptRef.current = [];
+      const practiceSession: PracticeSession = {
         id: makeSessionId(),
         scenarioId: selectedScenario.id,
         startedAt: new Date().toISOString(),
-        turns: []
-      });
+        turns: [],
+        transcript: [],
+      };
+      currentSessionRef.current = practiceSession;
+      setCurrentSession(practiceSession);
       pushLine({
         speaker: "system",
-        text: `${selectedScenario.title} is live.`
+        text: `${selectedScenario.title} is live.`,
       });
-      sendKickoff(session, selectedScenario);
+      sendKickoff(
+        session,
+        selectedScenario,
+        queuedCoachInstruction ?? undefined,
+      );
+      setQueuedCoachInstruction(null);
     } catch (caught) {
-      const message = caught instanceof Error ? caught.message : "Could not start the voice coach.";
+      const message =
+        caught instanceof Error
+          ? caught.message
+          : "Could not start the voice coach.";
       setConnectionState("error");
       setTalkState("muted");
       setError(message);
@@ -593,6 +792,55 @@ export function PracticeApp() {
       closeRealtimeSession(realtimeSessionRef.current);
       realtimeSessionRef.current = null;
     }
+  }
+
+  async function generateSessionReview(
+    session: PracticeSession,
+    scenario: PracticeScenario,
+  ) {
+    setIsGeneratingReview(true);
+    let review = buildLocalReview(session, scenario);
+    const hasLearnerTurn = session.transcript.some(
+      (line) => line.speaker === "learner",
+    );
+
+    if (hasLearnerTurn) {
+      try {
+        const response = await fetch("/api/session-review", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            session,
+            scenario,
+            profile: progress.profile,
+          }),
+        });
+        const data = (await response.json()) as {
+          review?: GeneratedReview;
+          error?: string;
+        };
+        if (!response.ok || !data.review) {
+          throw new Error(
+            data.error ?? "Could not generate the detailed review.",
+          );
+        }
+
+        review = {
+          ...review,
+          ...data.review,
+          source: "ai",
+        } satisfies SessionReview;
+      } catch {
+        pushLine({
+          speaker: "system",
+          text: "The detailed review was unavailable, so your session was saved with a quick local summary.",
+        });
+      }
+    }
+
+    setProgress((existing) => addSessionReview(existing, review));
+    setIsGeneratingReview(false);
+    setActiveView("journey");
   }
 
   function stopSession() {
@@ -603,16 +851,21 @@ export function PracticeApp() {
     setLiveTranscript("");
     latestCoachTextRef.current = "";
 
+    const currentSession = currentSessionRef.current;
     if (currentSession) {
-      setCurrentSession({
+      const endedSession = {
         ...currentSession,
-        endedAt: new Date().toISOString()
-      });
-      setProgress((existing) => completeSession(existing));
+        endedAt: new Date().toISOString(),
+        transcript: transcriptRef.current,
+      };
+      currentSessionRef.current = null;
+      setCurrentSession(null);
+      setProgress((existing) => completeSession(existing, selectedScenario.id));
       pushLine({
         speaker: "system",
-        text: "Session saved locally."
+        text: "Session saved. Building your coach report…",
       });
+      void generateSessionReview(endedSession, selectedScenario);
     }
   }
 
@@ -639,11 +892,68 @@ export function PracticeApp() {
       return;
     }
 
-    sendKickoff(realtimeSessionRef.current, selectedScenario);
+    sendCoachMessage(
+      realtimeSessionRef.current,
+      "Repeat your most recent spoken prompt once, a little more slowly, then wait for my answer.",
+    );
+  }
+
+  function openScenario(
+    scenarioId: PracticeScenario["id"],
+    instruction?: string,
+  ) {
+    if (connectionState === "connected") {
+      return;
+    }
+    const scenario =
+      allScenarios.find((item) => item.id === scenarioId) ?? scenarios[0];
+    setSelectedScenarioId(scenario.id);
+    setQueuedCoachInstruction(instruction ?? null);
+    setCoachLines([
+      {
+        speaker: "system",
+        text: instruction
+          ? "Your targeted drill is queued."
+          : `${scenario.title} is ready.`,
+      },
+    ]);
+    setActiveView("practice");
+  }
+
+  function practiceReviewPhrase(phrase: ReviewPhrase) {
+    openScenario(
+      phrase.scenarioId,
+      `Run a short correction drill. Say this natural version out loud: “${phrase.improved}”. Explain the meaning briefly, ask me to repeat it, then give feedback on ${phrase.focusArea}.`,
+    );
   }
 
   const canTalk = connectionState === "connected";
   const recentFeedback = progress.recentFeedback.slice(0, 4);
+  const dueReviewCount = progress.reviewQueue.filter(
+    (phrase) => phrase.nextReviewDate <= dateKey(),
+  ).length;
+
+  if (!hasLoadedProgress) {
+    return (
+      <main className="loading-screen">
+        <LoaderCircle className="spin" size={28} aria-hidden="true" />
+        <span>Loading your training journey…</span>
+      </main>
+    );
+  }
+
+  if (!progress.profile || isEditingProfile) {
+    return (
+      <Onboarding
+        initialProfile={progress.profile}
+        onComplete={(profile) => {
+          setProgress((existing) => beginJourney(existing, profile));
+          setIsEditingProfile(false);
+          setActiveView("journey");
+        }}
+      />
+    );
+  }
 
   return (
     <main className="app-shell">
@@ -652,189 +962,335 @@ export function PracticeApp() {
           <p className="eyebrow">Guangzhou Cantonese</p>
           <h1>Speak first. Read almost never.</h1>
         </div>
-        <div className={`status-pill status-${connectionState}`}>
-          <Activity size={16} aria-hidden="true" />
-          <span>{statusCopy(connectionState)}</span>
+        <div className="top-band-actions">
+          <button
+            aria-label="Show keyboard shortcuts"
+            className="shortcut-button"
+            onClick={() => setShowKeyboardShortcuts(true)}
+            title="Keyboard shortcuts (?)"
+            type="button"
+          >
+            <Keyboard size={18} aria-hidden="true" />
+            <span>Shortcuts</span>
+          </button>
+          <div className={`status-pill status-${connectionState}`}>
+            {isGeneratingReview ? (
+              <LoaderCircle className="spin" size={16} aria-hidden="true" />
+            ) : (
+              <Activity size={16} aria-hidden="true" />
+            )}
+            <span>
+              {isGeneratingReview
+                ? "Reviewing session"
+                : statusCopy(connectionState)}
+            </span>
+          </div>
         </div>
       </section>
 
-      <section className="workspace" aria-label="Cantonese speaking coach">
-        <aside className="scenario-rail" aria-label="Practice scenarios">
-          <div className="rail-heading">
-            <Waves size={18} aria-hidden="true" />
-            <span>Scenarios</span>
-          </div>
-          <div className="scenario-list">
-            {scenarios.map((scenario) => (
-              <button
-                className={`scenario-card ${scenario.id === selectedScenario.id ? "active" : ""}`}
-                key={scenario.id}
-                onClick={() => {
-                  setSelectedScenarioId(scenario.id);
-                  if (connectionState === "idle" || connectionState === "error") {
-                    setCoachLines([
-                      {
-                        speaker: "system",
-                        text: `${scenario.title} is ready.`
-                      }
-                    ]);
-                  }
-                }}
-                type="button"
-              >
-                <span>
-                  <strong>{scenario.title}</strong>
-                  <small>{scenario.level}</small>
-                </span>
-                <ChevronRight size={17} aria-hidden="true" />
-              </button>
-            ))}
-          </div>
-        </aside>
+      {showKeyboardShortcuts ? (
+        <KeyboardShortcuts onClose={() => setShowKeyboardShortcuts(false)} />
+      ) : null}
 
-        <section className="practice-stage" aria-label="Current practice">
-          <div className="stage-header">
-            <div>
-              <p className="eyebrow">{selectedScenario.level}</p>
-              <h2>{selectedScenario.title}</h2>
-              <p>{selectedScenario.situation}</p>
-            </div>
-            <button
-              className="icon-button"
-              disabled={!canTalk}
-              onClick={repeatPrompt}
-              title="Repeat prompt"
-              type="button"
-            >
-              <RefreshCw size={19} aria-hidden="true" />
-            </button>
-          </div>
+      <nav className="app-nav" aria-label="Main navigation">
+        <button
+          aria-current={activeView === "practice" ? "page" : undefined}
+          className={activeView === "practice" ? "active" : ""}
+          onClick={() => setActiveView("practice")}
+          type="button"
+        >
+          <BookOpen size={17} aria-hidden="true" /> Practice
+        </button>
+        <button
+          aria-current={activeView === "journey" ? "page" : undefined}
+          className={activeView === "journey" ? "active" : ""}
+          disabled={connectionState === "connected"}
+          onClick={() => setActiveView("journey")}
+          type="button"
+        >
+          <MapIcon size={17} aria-hidden="true" /> Journey
+        </button>
+        <button
+          aria-current={activeView === "review" ? "page" : undefined}
+          className={activeView === "review" ? "active" : ""}
+          disabled={connectionState === "connected"}
+          onClick={() => setActiveView("review")}
+          type="button"
+        >
+          <RefreshCw size={17} aria-hidden="true" /> Review
+          {dueReviewCount ? <span>{dueReviewCount}</span> : null}
+        </button>
+        <button
+          aria-current={activeView === "history" ? "page" : undefined}
+          className={activeView === "history" ? "active" : ""}
+          disabled={connectionState === "connected"}
+          onClick={() => setActiveView("history")}
+          type="button"
+        >
+          <HistoryIcon size={17} aria-hidden="true" /> History
+        </button>
+      </nav>
 
-          <div className="voice-panel" aria-live="polite">
-            <div className="pulse-field">
-              <span className={talkState === "listening" ? "wave live" : "wave"} />
-              <span className={talkState === "listening" ? "wave live delay-one" : "wave delay-one"} />
-              <span className={talkState === "listening" ? "wave live delay-two" : "wave delay-two"} />
-              {talkState === "listening" ? <Mic size={34} /> : <Volume2 size={34} />}
-            </div>
-            <div className="transcript-stack">
-              {liveTranscript ? (
-                <p className="live-transcript">{liveTranscript}</p>
-              ) : (
-                <p>{coachLines[0]?.text ?? "Start when you are ready."}</p>
-              )}
-            </div>
-          </div>
-
-          {error ? (
-            <div className="notice" role="alert">
-              <CircleAlert size={18} aria-hidden="true" />
-              <span>{error}</span>
-            </div>
-          ) : null}
-
-          <div className="control-strip">
-            {connectionState === "connected" ? (
-              <button className="secondary-button" onClick={stopSession} type="button">
-                <Square size={17} aria-hidden="true" />
-                Finish
-              </button>
-            ) : (
-              <button className="primary-button" onClick={startSession} type="button">
-                <Play size={18} aria-hidden="true" />
-                Start coach
-              </button>
-            )}
-
-            <button
-              className={`talk-button ${talkState === "listening" ? "listening" : ""}`}
-              disabled={!canTalk}
-              onMouseDown={beginTalking}
-              onMouseLeave={endTalking}
-              onMouseUp={endTalking}
-              onTouchEnd={endTalking}
-              onTouchStart={beginTalking}
-              type="button"
-            >
-              {talkState === "listening" ? <Pause size={24} /> : <Mic size={24} />}
-              <span>{talkState === "listening" ? "Listening" : "Hold to talk"}</span>
-            </button>
-
-            <button
-              className="secondary-button"
-              disabled={connectionState === "checking-mic" || connectionState === "connecting"}
-              onClick={connectionState === "connected" ? endTalking : startSession}
-              type="button"
-            >
-              {connectionState === "connected" ? <MicOff size={17} /> : <RefreshCw size={17} />}
-              {connectionState === "connected" ? "Mute" : "Retry"}
-            </button>
-          </div>
-
-          <div className="prompt-row" aria-label="Sample prompts">
-            {selectedScenario.samplePrompts.map((prompt) => (
-              <button
-                key={prompt}
-                onClick={() => {
-                  pushLine({ speaker: "system", text: prompt });
-                  if (connectionState === "connected") {
-                    sendKickoff(realtimeSessionRef.current, selectedScenario);
-                  }
-                }}
-                type="button"
-              >
-                {prompt}
-              </button>
-            ))}
-          </div>
-        </section>
-
-        <aside className="progress-panel" aria-label="Progress">
-          <div className="metric-grid">
-            <div>
-              <span>{progress.streak}</span>
-              <small>streak</small>
-            </div>
-            <div>
-              <span>{progress.sessionsCompleted}</span>
-              <small>sessions</small>
-            </div>
-            <div>
-              <span>{progress.confidenceScore}</span>
-              <small>confidence</small>
-            </div>
-          </div>
-
-          <div className="focus-block">
+      {activeView === "practice" ? (
+        <section className="workspace" aria-label="Cantonese speaking coach">
+          <aside className="scenario-rail" aria-label="Practice scenarios">
             <div className="rail-heading">
-              <Sparkles size={18} aria-hidden="true" />
-              <span>Focus</span>
+              <Waves size={18} aria-hidden="true" />
+              <span>Scenarios</span>
             </div>
-            <div className="tag-list">
-              {progress.weakAreas.map((area) => (
-                <span key={area}>{area}</span>
+            <div className="scenario-list">
+              {allScenarios.map((scenario) => (
+                <button
+                  className={`scenario-card ${scenario.id === selectedScenario.id ? "active" : ""}`}
+                  disabled={
+                    connectionState === "connected" &&
+                    scenario.id !== selectedScenario.id
+                  }
+                  key={scenario.id}
+                  onClick={() => openScenario(scenario.id)}
+                  type="button"
+                >
+                  <span>
+                    <strong>{scenario.title}</strong>
+                    <small>{scenario.level}</small>
+                  </span>
+                  <ChevronRight size={17} aria-hidden="true" />
+                </button>
               ))}
             </div>
-          </div>
+          </aside>
 
-          <div className="feedback-list">
-            <div className="rail-heading">
-              <Volume2 size={18} aria-hidden="true" />
-              <span>Recent feedback</span>
+          <section className="practice-stage" aria-label="Current practice">
+            <div className="stage-header">
+              <div>
+                <p className="eyebrow">{selectedScenario.level}</p>
+                <h2>{selectedScenario.title}</h2>
+                <p>{selectedScenario.situation}</p>
+              </div>
+              <button
+                className="icon-button"
+                disabled={!canTalk}
+                onClick={repeatPrompt}
+                title="Repeat prompt"
+                type="button"
+              >
+                <RefreshCw size={19} aria-hidden="true" />
+              </button>
             </div>
-            {recentFeedback.length ? (
-              recentFeedback.map((feedback) => (
-                <article key={feedback.id} className="feedback-item">
-                  <strong>{focusLabel(feedback.focusArea)}</strong>
-                  <p>{feedback.summary}</p>
-                </article>
-              ))
-            ) : (
-              <p className="empty-copy">Feedback will appear after your first spoken turn.</p>
-            )}
-          </div>
-        </aside>
-      </section>
+
+            <div className="voice-panel" aria-live="polite">
+              <div className="pulse-field">
+                <span
+                  className={talkState === "listening" ? "wave live" : "wave"}
+                />
+                <span
+                  className={
+                    talkState === "listening"
+                      ? "wave live delay-one"
+                      : "wave delay-one"
+                  }
+                />
+                <span
+                  className={
+                    talkState === "listening"
+                      ? "wave live delay-two"
+                      : "wave delay-two"
+                  }
+                />
+                {talkState === "listening" ? (
+                  <Mic size={34} />
+                ) : (
+                  <Volume2 size={34} />
+                )}
+              </div>
+              <div className="transcript-stack">
+                {liveTranscript ? (
+                  <p className="live-transcript">{liveTranscript}</p>
+                ) : (
+                  <p>{coachLines[0]?.text ?? "Start when you are ready."}</p>
+                )}
+              </div>
+            </div>
+
+            {error ? (
+              <div className="notice" role="alert">
+                <CircleAlert size={18} aria-hidden="true" />
+                <span>{error}</span>
+              </div>
+            ) : null}
+
+            <div className="control-strip">
+              {connectionState === "connected" ? (
+                <button
+                  className="secondary-button"
+                  onClick={stopSession}
+                  type="button"
+                >
+                  <Square size={17} aria-hidden="true" />
+                  Finish
+                </button>
+              ) : (
+                <button
+                  className="primary-button"
+                  disabled={isGeneratingReview}
+                  onClick={startSession}
+                  type="button"
+                >
+                  <Play size={18} aria-hidden="true" />
+                  Start coach
+                </button>
+              )}
+
+              <button
+                className={`talk-button ${talkState === "listening" ? "listening" : ""}`}
+                disabled={!canTalk}
+                onMouseDown={beginTalking}
+                onMouseLeave={endTalking}
+                onMouseUp={endTalking}
+                onTouchEnd={endTalking}
+                onTouchStart={beginTalking}
+                type="button"
+              >
+                {talkState === "listening" ? (
+                  <Pause size={24} />
+                ) : (
+                  <Mic size={24} />
+                )}
+                <span>
+                  {talkState === "listening" ? "Listening" : "Hold to talk"}
+                </span>
+              </button>
+
+              <button
+                className="secondary-button"
+                disabled={
+                  isGeneratingReview ||
+                  connectionState === "checking-mic" ||
+                  connectionState === "connecting"
+                }
+                onClick={
+                  connectionState === "connected" ? endTalking : startSession
+                }
+                type="button"
+              >
+                {connectionState === "connected" ? (
+                  <MicOff size={17} />
+                ) : (
+                  <RefreshCw size={17} />
+                )}
+                {connectionState === "connected" ? "Mute" : "Retry"}
+              </button>
+            </div>
+
+            <div className="prompt-row" aria-label="Sample prompts">
+              {selectedScenario.samplePrompts.map((prompt) => (
+                <button
+                  key={prompt}
+                  onClick={() => {
+                    pushLine({ speaker: "system", text: prompt });
+                    if (connectionState === "connected") {
+                      sendCoachMessage(
+                        realtimeSessionRef.current,
+                        `Practice this next: “${prompt}” Ask me one short spoken question, then wait for my answer.`,
+                      );
+                    } else {
+                      setQueuedCoachInstruction(
+                        `Practice this next: “${prompt}” Ask me one short spoken question, then wait for my answer.`,
+                      );
+                    }
+                  }}
+                  type="button"
+                >
+                  {prompt}
+                </button>
+              ))}
+            </div>
+          </section>
+
+          <aside className="progress-panel" aria-label="Progress">
+            <div className="metric-grid">
+              <div>
+                <span>{progress.streak}</span>
+                <small>streak</small>
+              </div>
+              <div>
+                <span>{progress.sessionsCompleted}</span>
+                <small>sessions</small>
+              </div>
+              <div>
+                <span>{progress.confidenceScore}</span>
+                <small>confidence</small>
+              </div>
+            </div>
+
+            <div className="focus-block">
+              <div className="rail-heading">
+                <Sparkles size={18} aria-hidden="true" />
+                <span>Focus</span>
+              </div>
+              <div className="tag-list">
+                {progress.weakAreas.map((area) => (
+                  <span key={area}>{area}</span>
+                ))}
+              </div>
+            </div>
+
+            <div className="feedback-list">
+              <div className="rail-heading">
+                <Volume2 size={18} aria-hidden="true" />
+                <span>Recent feedback</span>
+              </div>
+              {recentFeedback.length ? (
+                recentFeedback.map((feedback) => (
+                  <article key={feedback.id} className="feedback-item">
+                    <strong>{focusLabel(feedback.focusArea)}</strong>
+                    <p>{feedback.summary}</p>
+                  </article>
+                ))
+              ) : (
+                <p className="empty-copy">
+                  Feedback will appear after your first spoken turn.
+                </p>
+              )}
+            </div>
+          </aside>
+        </section>
+      ) : activeView === "journey" ? (
+        <JourneyDashboard
+          onAddCustomScenario={(scenario) =>
+            setProgress((existing) => addCustomScenario(existing, scenario))
+          }
+          onEditProfile={() => setIsEditingProfile(true)}
+          onImport={(serialized) => setProgress(importProgress(serialized))}
+          onRemoveCustomScenario={(scenarioId) => {
+            if (selectedScenarioId === scenarioId) {
+              setSelectedScenarioId(scenarios[0].id);
+            }
+            setProgress((existing) =>
+              removeCustomScenario(existing, scenarioId),
+            );
+          }}
+          onStartScenario={openScenario}
+          progress={progress}
+          scenarios={allScenarios}
+        />
+      ) : activeView === "review" ? (
+        <ReviewQueue
+          onGrade={(phraseId, rating) =>
+            setProgress((existing) =>
+              gradeReviewPhrase(existing, phraseId, rating),
+            )
+          }
+          onPractice={practiceReviewPhrase}
+          phrases={progress.reviewQueue}
+        />
+      ) : (
+        <SessionHistory
+          onPracticeAgain={openScenario}
+          reviews={progress.sessionReviews}
+          scenarios={allScenarios}
+        />
+      )}
     </main>
   );
 }
