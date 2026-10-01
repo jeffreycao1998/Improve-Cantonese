@@ -1,4 +1,5 @@
 import type { PracticeScenario } from "@/lib/types";
+import type { PracticeLanguage } from "@/lib/languages";
 
 export const scenarios: PracticeScenario[] = [
   {
@@ -63,6 +64,14 @@ export const scenarios: PracticeScenario[] = [
   }
 ];
 
-export function getScenario(id: string | null | undefined) {
-  return scenarios.find((scenario) => scenario.id === id) ?? scenarios[0];
+export function adaptScenario(scenario: PracticeScenario, language: PracticeLanguage): PracticeScenario {
+  if (language === "cantonese") return scenario;
+  const adapt = (text: string) => text.replaceAll("Guangzhou Cantonese", "standard Mandarin").replaceAll("Cantonese", "Mandarin");
+  return { ...scenario, coachGoal: adapt(scenario.coachGoal), learnerGoal: adapt(scenario.learnerGoal),
+    samplePrompts: scenario.samplePrompts.map(adapt) };
+}
+
+export function getScenario(id: string | null | undefined, language: PracticeLanguage = "cantonese") {
+  return adaptScenario(scenarios.find((scenario) => scenario.id === id)
+    ?? scenarios[Math.floor(Math.random() * scenarios.length)], language);
 }

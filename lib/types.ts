@@ -44,8 +44,9 @@ export type LocalProgress = {
   weakAreas: string[];
 };
 
-export type RealtimeSessionResponse = {
-  client_secret: string;
-  expires_at: number | null;
+export type LiveSessionResponse = {
+  watchdog: { token: string; heartbeatIntervalMs: number; heartbeatTimeoutMs: number };
+  session: { id: string };
+  transport: { type: "webrtc"; sdp: string };
   model: string;
 };

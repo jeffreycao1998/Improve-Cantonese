@@ -1,4 +1,5 @@
 import type { LocalProgress, PracticeTurnFeedback } from "@/lib/types";
+import type { PracticeLanguage } from "@/lib/languages";
 
 export const progressStorageKey = "cantonese-speaking-coach-progress-v1";
 
@@ -21,12 +22,12 @@ function yesterdayKey(date = new Date()) {
   return todayKey(copy);
 }
 
-export function loadProgress(): LocalProgress {
+export function loadProgress(language: PracticeLanguage = "cantonese"): LocalProgress {
   if (typeof window === "undefined") {
     return defaultProgress;
   }
 
-  const stored = window.localStorage.getItem(progressStorageKey);
+  const stored = window.localStorage.getItem(language === "mandarin" ? "mandarin-speaking-coach-progress-v1" : progressStorageKey);
   if (!stored) {
     return defaultProgress;
   }
@@ -41,12 +42,12 @@ export function loadProgress(): LocalProgress {
   }
 }
 
-export function saveProgress(progress: LocalProgress) {
+export function saveProgress(progress: LocalProgress, language: PracticeLanguage = "cantonese") {
   if (typeof window === "undefined") {
     return;
   }
 
-  window.localStorage.setItem(progressStorageKey, JSON.stringify(progress));
+  window.localStorage.setItem(language === "mandarin" ? "mandarin-speaking-coach-progress-v1" : progressStorageKey, JSON.stringify(progress));
 }
 
 export function recordFeedback(progress: LocalProgress, feedback: PracticeTurnFeedback) {

@@ -1,59 +1,14 @@
 import { NextResponse } from "next/server";
 import { buildCoachInstructions } from "@/lib/coachInstructions";
 import { getScenario } from "@/lib/scenarios";
+import { registerWatchdog } from "@/lib/server/sessionWatchdog";
+import { CONVERSATION_SUMMARY_LIMIT } from "@/lib/conversationMemory";
+import { isPracticeLanguage } from "@/lib/languages";
+import { isPracticeMode } from "@/lib/practiceMode";
 
 export const runtime = "nodejs";
 
-const REALTIME_MODEL = "gpt-realtime-2";
-
-type RequestBody = {
-  scenarioId?: string;
-};
-
-function pickClientSecret(payload: unknown) {
-  if (!payload || typeof payload !== "object") {
-    return null;
-  }
-
-  const record = payload as Record<string, unknown>;
-  const direct = record.client_secret ?? record.value ?? record.secret;
-
-  if (typeof direct === "string") {
-    return direct;
-  }
-
-  if (direct && typeof direct === "object") {
-    const nested = direct as Record<string, unknown>;
-    if (typeof nested.value === "string") {
-      return nested.value;
-    }
-    if (typeof nested.secret === "string") {
-      return nested.secret;
-    }
-  }
-
-  return null;
-}
-
-function pickExpiry(payload: unknown) {
-  if (!payload || typeof payload !== "object") {
-    return null;
-  }
-
-  const record = payload as Record<string, unknown>;
-  if (typeof record.expires_at === "number") {
-    return record.expires_at;
-  }
-
-  if (record.client_secret && typeof record.client_secret === "object") {
-    const nested = record.client_secret as Record<string, unknown>;
-    if (typeof nested.expires_at === "number") {
-      return nested.expires_at;
-    }
-  }
-
-  return null;
-}
+const LIVE_MODEL = "gpt-live-1";
 
 export async function POST(request: Request) {
   const apiKey = process.env.OPENAI_API_KEY;
@@ -67,15 +22,20 @@ export async function POST(request: Request) {
     );
   }
 
-  let body: RequestBody = {};
-  try {
-    body = (await request.json()) as RequestBody;
-  } catch {
-    body = {};
+  const body = await request.json().catch(() => null);
+  if (!body || typeof body.sdp !== "string" || !body.sdp.trim()) {
+    return NextResponse.json({ error: "A WebRTC SDP offer is required." }, { status: 400 });
   }
 
-  const scenario = getScenario(body.scenarioId);
-  const response = await fetch("https://api.openai.com/v1/realtime/client_secrets", {
+  const language = body.language ?? "cantonese";
+  if (!isPracticeLanguage(language)) return NextResponse.json({ error: "Unsupported practice language." }, { status: 400 });
+  const mode = body.mode ?? "normal";
+  if (!isPracticeMode(mode)) return NextResponse.json({ error: "Unsupported practice mode." }, { status: 400 });
+  const scenario = getScenario(typeof body.scenarioId === "string" ? body.scenarioId : undefined, language);
+  if (body.conversationSummary !== undefined && (typeof body.conversationSummary !== "string" || body.conversationSummary.length > CONVERSATION_SUMMARY_LIMIT)) {
+    return NextResponse.json({ error: "Invalid conversation summary." }, { status: 400 });
+  }
+  const response = await fetch("https://api.openai.com/v1/live/sessions", {
     method: "POST",
     headers: {
       Authorization: `Bearer ${apiKey}`,
@@ -84,27 +44,11 @@ export async function POST(request: Request) {
     },
     body: JSON.stringify({
       session: {
-        type: "realtime",
-        model: REALTIME_MODEL,
-        instructions: buildCoachInstructions(scenario),
-        output_modalities: ["audio", "text"],
-        audio: {
-          input: {
-            transcription: {
-              model: "gpt-4o-mini-transcribe",
-              language: "yue"
-            },
-            turn_detection: {
-              type: "server_vad",
-              create_response: true,
-              silence_duration_ms: 650
-            }
-          },
-          output: {
-            voice: "alloy"
-          }
-        }
-      }
+        model: LIVE_MODEL,
+        instructions: buildCoachInstructions(scenario, body.conversationSummary, language, mode),
+        audio: { output: { voice: "marin" } }
+      },
+      transport: { type: "webrtc", sdp: body.sdp }
     })
   });
 
@@ -113,7 +57,7 @@ export async function POST(request: Request) {
   if (!response.ok) {
     return NextResponse.json(
       {
-        error: "Could not create a realtime voice session.",
+        error: "Could not create a GPT-Live voice session.",
         detail:
           payload && typeof payload === "object" && "error" in payload
             ? (payload as { error: unknown }).error
@@ -123,20 +67,23 @@ export async function POST(request: Request) {
     );
   }
 
-  const clientSecret = pickClientSecret(payload);
-
-  if (!clientSecret) {
+  const result = payload as { session?: { id?: string }; transport?: { sdp?: string } } | null;
+  if (typeof result?.session?.id !== "string" || typeof result?.transport?.sdp !== "string") {
     return NextResponse.json(
-      {
-        error: "OpenAI did not return a usable realtime client secret."
-      },
+      { error: "OpenAI did not return a usable GPT-Live WebRTC answer." },
       { status: 502 }
     );
   }
-
+  let watchdog;
+  try {
+    watchdog = await registerWatchdog(result.session.id, apiKey);
+  } catch {
+    return NextResponse.json({ error: "The server watchdog could not connect. Session closure has been requested; please try again." }, { status: 502 });
+  }
   return NextResponse.json({
-    client_secret: clientSecret,
-    expires_at: pickExpiry(payload),
-    model: REALTIME_MODEL
+    session: { id: result.session.id },
+    transport: { type: "webrtc", sdp: result.transport.sdp },
+    model: LIVE_MODEL,
+    watchdog
   });
 }

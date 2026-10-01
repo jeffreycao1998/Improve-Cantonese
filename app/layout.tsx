@@ -2,8 +2,8 @@ import type { Metadata, Viewport } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Cantonese Speaking Coach",
-  description: "A voice-first Cantonese practice coach for English speakers."
+  title: "Cantonese & Mandarin Speaking Coach",
+  description: "A voice-first Cantonese and Mandarin practice coach for English speakers."
 };
 
 export const viewport: Viewport = {
